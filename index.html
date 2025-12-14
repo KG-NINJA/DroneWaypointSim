@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Waypoint Drone Simulator (HTML Only)</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+
+    #info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #cfe8ff;
+      font-family: monospace;
+      background: rgba(0,0,0,0.6);
+      padding: 8px;
+      font-size: 12px;
+      border: 1px solid rgba(0,123,255,0.35);
+      border-radius: 8px;
+    }
+
+    #panel {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: min(360px, calc(100vw - 20px));
+      color: #eaf4ff;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: rgba(10, 14, 24, 0.78);
+      border: 1px solid rgba(0,123,255,0.45);
+      border-radius: 12px;
+      padding: 12px;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+
+    #panel h1 {
+      font-size: 14px;
+      margin: 0 0 10px;
+      letter-spacing: 0.2px;
+      color: #d7ecff;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 120px 1fr 64px;
+      gap: 8px;
+      align-items: center;
+      margin: 8px 0;
+    }
+
+    .row label {
+      font-size: 12px;
+      color: rgba(215, 236, 255, 0.92);
+    }
+
+    input[type="range"] { width: 100%; accent-color: #007BFF; }
+    input[type="number"], select {
+      width: 100%;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(0,123,255,0.35);
+      color: #eaf4ff;
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .hint {
+      font-size: 11px;
+      color: rgba(215, 236, 255, 0.75);
+      line-height: 1.35;
+      margin-top: 8px;
+    }
+
+    .btns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    button {
+      background: rgba(0,123,255,0.18);
+      border: 1px solid rgba(0,123,255,0.55);
+      color: #eaf4ff;
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    button:hover { background: rgba(0,123,255,0.28); }
+
+    .pill {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(0,123,255,0.35);
+      background: rgba(0,123,255,0.10);
+      font-size: 12px;
+      margin-top: 6px;
+    }
+
+    .pill input { transform: translateY(1px); accent-color: #007BFF; }
+  </style>
+</head>
+<body>
+<div id="info">
+  Waypoint Drone Simulator<br>
+  Height: <span id="hudHeight">8</span>m<br>
+  Waypoints: <span id="hudWp">0</span><br>
+  Mode: <span id="hudMode">Aerial</span>
+</div>
+
+<div id="panel">
+  <h1>コントロール</h1>
+
+  <div class="row">
+    <label for="altitude">高度 (m)</label>
+    <input id="altitude" type="range" min="0" max="50" step="0.5" value="8" />
+    <input id="altitudeNum" type="number" min="0" max="50" step="0.5" value="8" />
+  </div>
+
+  <div class="row">
+    <label for="speed">速度</label>
+    <input id="speed" type="range" min="0.01" max="0.2" step="0.01" value="0.05" />
+    <input id="speedNum" type="number" min="0.01" max="0.2" step="0.01" value="0.05" />
+  </div>
+
+  <div class="row">
+    <label for="camMode">カメラ</label>
+    <select id="camMode">
+      <option value="aerial">俯瞰</option>
+      <option value="drone">ドローン視点</option>
+    </select>
+    <div></div>
+  </div>
+
+  <div class="pill">
+    <input id="editMode" type="checkbox" checked />
+    <label for="editMode">編集モード（追加/削除/ドラッグ移動）</label>
+  </div>
+
+  <div class="btns">
+    <button id="resetRoute" type="button">ルートをリセット</button>
+    <button id="clearRoute" type="button">全消去（2点に戻す）</button>
+  </div>
+
+  <div class="hint">
+    追加: 地面をクリック / 削除: Shift+クリック（近い点を削除） / 移動: 点をドラッグ<br>
+    ※ウェイポイントは最低2点を維持します。
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
+
+<script>
+/* ===== シーン初期化 ===== */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x101020);
+
+const camera = new THREE.PerspectiveCamera(
+  60, window.innerWidth / window.innerHeight, 0.1, 1000
+);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// 日本語コメント: 影を有効化（地面やランドマークが見えると没入感が上がる）
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+/* ===== ライト ===== */
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+dirLight.position.set(20, 50, 10);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.set(1024, 1024);
+dirLight.shadow.camera.near = 1;
+dirLight.shadow.camera.far = 200;
+dirLight.shadow.camera.left = -80;
+dirLight.shadow.camera.right = 80;
+dirLight.shadow.camera.top = 80;
+dirLight.shadow.camera.bottom = -80;
+scene.add(dirLight);
+
+/* ===== 地面 ===== */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(200, 200),
+  new THREE.MeshStandardMaterial({ color: 0x222222 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// 日本語コメント: ドローン視点で「地面の流れ」が見えるようにグリッドを重ねる
+const grid = new THREE.GridHelper(200, 80, 0x007BFF, 0x294a74);
+grid.position.y = 0.01; // z-fighting回避
+scene.add(grid);
+
+// 日本語コメント: 高さのあるランドマーク（ビル風）を追加して視点に意味を持たせる
+const landmarkMat = new THREE.MeshStandardMaterial({ color: 0x3a3f4a, metalness: 0.1, roughness: 0.9 });
+const landmarkGeom = new THREE.BoxGeometry(1, 1, 1);
+const landmarks = new THREE.InstancedMesh(landmarkGeom, landmarkMat, 40);
+landmarks.castShadow = true;
+landmarks.receiveShadow = true;
+
+{
+  const dummy = new THREE.Object3D();
+  // 日本語コメント: ルート周辺にある程度固めて配置（ランダムでも再現性を維持）
+  let seed = 1337;
+  const rand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 0xffffffff;
+  };
+
+  for (let i = 0; i < 40; i += 1) {
+    const x = (rand() * 2 - 1) * 60;
+    const z = (rand() * 2 - 1) * 60;
+    const h = 2 + rand() * 18;
+
+    dummy.position.set(x, h / 2, z);
+    dummy.scale.set(1.5 + rand() * 2.5, h, 1.5 + rand() * 2.5);
+    dummy.rotation.y = rand() * Math.PI;
+    dummy.updateMatrix();
+    landmarks.setMatrixAt(i, dummy.matrix);
+  }
+  landmarks.instanceMatrix.needsUpdate = true;
+}
+scene.add(landmarks);
+
+/* ===== ドローン ===== */
+const drone = new THREE.Mesh(
+  new THREE.BoxGeometry(0.5, 0.2, 0.5),
+  new THREE.MeshStandardMaterial({ color: 0xff4444 })
+);
+drone.castShadow = true;
+drone.receiveShadow = true;
+scene.add(drone);
+
+/* ===== ドローン搭載カメラ（ドローン視点用） ===== */
+const droneCam = new THREE.PerspectiveCamera(70, 1, 0.05, 500);
+// 日本語コメント: ドローン視点は「機体の2m真上」から（真下＝機体中心）を見る
+droneCam.position.set(0, 2.0, 0);
+droneCam.lookAt(0, 0, 0);
+drone.add(droneCam);
+
+/* ===== UI参照（HUD/パネル） ===== */
+const hudHeightEl = document.getElementById('hudHeight');
+const hudWpEl = document.getElementById('hudWp');
+const hudModeEl = document.getElementById('hudMode');
+
+const altitudeEl = document.getElementById('altitude');
+const altitudeNumEl = document.getElementById('altitudeNum');
+const speedEl = document.getElementById('speed');
+const speedNumEl = document.getElementById('speedNum');
+const camModeEl = document.getElementById('camMode');
+const editModeEl = document.getElementById('editMode');
+const resetRouteEl = document.getElementById('resetRoute');
+const clearRouteEl = document.getElementById('clearRoute');
+
+/* ===== 設定（高度/速度/モード） ===== */
+const settings = {
+  altitude: Number(altitudeEl.value),
+  speed: Number(speedEl.value),
+  camMode: camModeEl.value, // 'aerial' | 'drone'
+  editMode: Boolean(editModeEl.checked),
+  // 日本語コメント: 慣性パラメータ（必要なら後でUI化できる）
+  accel: 18,   // 加速度（大きいほどキビキビ）
+  damping: 1.2, // 抵抗（大きいほど減速が早い）
+  turn: 10,    // 旋回の追従（大きいほど機首が素早く向く）
+};
+
+/* ===== ウェイポイント（閉ループ：配列を循環して飛ぶ） ===== */
+const defaultRouteXZ = [
+  [0, 0],
+  [20, 0],
+  [20, 20],
+  [0, 20],
+];
+
+function buildRouteFromXZ(xzList, altitude) {
+  return xzList.map(([x, z]) => new THREE.Vector3(x, altitude, z));
+}
+
+let routePoints = buildRouteFromXZ(defaultRouteXZ, settings.altitude);
+
+let wpIndex = 0;
+
+/* ===== 物理（慣性）状態 ===== */
+const clock = new THREE.Clock();
+const motion = {
+  velocity: new THREE.Vector3(0, 0, 0),
+};
+
+// 日本語コメント: アニメーション中の割り当てを減らすためのワーク変数
+const vToTarget = new THREE.Vector3();
+const vDir = new THREE.Vector3();
+const vDesired = new THREE.Vector3();
+const vLook = new THREE.Vector3();
+const tmpObj = new THREE.Object3D();
+const qDesired = new THREE.Quaternion();
+
+/* ===== ウェイポイント表示（球）とルート表示（線） ===== */
+const wpMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+const wpGeom = new THREE.SphereGeometry(0.3, 14, 14);
+const wpMarkers = [];
+
+const pathMat = new THREE.LineBasicMaterial({ color: 0x007BFF });
+let pathLine = null;
+
+function disposePathLine() {
+  if (!pathLine) return;
+  scene.remove(pathLine);
+  if (pathLine.geometry) pathLine.geometry.dispose();
+  pathLine = null;
+}
+
+function rebuildWaypointMarkers() {
+  // 日本語コメント: 既存のマーカーを安全に消してから作り直す
+  while (wpMarkers.length) {
+    const marker = wpMarkers.pop();
+    scene.remove(marker);
+  }
+
+  routePoints.forEach((wp) => {
+    const marker = new THREE.Mesh(wpGeom, wpMat);
+    marker.position.copy(wp);
+    scene.add(marker);
+    wpMarkers.push(marker);
+  });
+
+  rebuildPathLine();
+  updateHud();
+}
+
+function rebuildPathLine() {
+  // 日本語コメント: ルートを閉じた線として描画（最後→最初を接続）
+  disposePathLine();
+  if (routePoints.length < 2) return;
+
+  const closedPoints = [...routePoints, routePoints[0]];
+  const geom = new THREE.BufferGeometry().setFromPoints(closedPoints);
+  pathLine = new THREE.Line(geom, pathMat);
+  scene.add(pathLine);
+}
+
+/* ===== 俯瞰カメラ位置 ===== */
+camera.position.set(30, 25, 30);
+camera.lookAt(0, 0, 0);
+
+/* ===== レイキャスト（編集操作用） ===== */
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+
+let dragIndex = -1;
+let isPointerDown = false;
+
+function setPointerFromEvent(ev) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+}
+
+function intersectGround() {
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObject(ground, false);
+  return hits[0] || null;
+}
+
+function intersectWaypointMarker() {
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(wpMarkers, false);
+  return hits[0] || null;
+}
+
+function clampRouteMinimum() {
+  // 日本語コメント: ルートは最低2点（直線往復でもOK）を保証する
+  if (routePoints.length >= 2) return;
+  routePoints = buildRouteFromXZ([[0, 0], [10, 0]], settings.altitude);
+  wpIndex = 0;
+}
+
+function updateHud() {
+  hudHeightEl.textContent = String(settings.altitude.toFixed(1).replace(/\.0$/, ''));
+  hudWpEl.textContent = String(routePoints.length);
+  hudModeEl.textContent = settings.camMode === 'drone' ? 'Drone' : 'Aerial';
+}
+
+function setAltitude(nextAltitude) {
+  const v = Number(nextAltitude);
+  if (!Number.isFinite(v)) return;
+  settings.altitude = Math.max(0, Math.min(50, v));
+
+  // 日本語コメント: ルートとマーカーの高度(y)を一括更新
+  routePoints.forEach((p) => { p.y = settings.altitude; });
+  wpMarkers.forEach((m, i) => { m.position.y = routePoints[i].y; });
+  drone.position.y = settings.altitude;
+  motion.velocity.y = 0;
+
+  rebuildPathLine();
+  updateHud();
+}
+
+function setSpeed(nextSpeed) {
+  const v = Number(nextSpeed);
+  if (!Number.isFinite(v)) return;
+  settings.speed = Math.max(0.01, Math.min(0.2, v));
+}
+
+function resetRoute() {
+  routePoints = buildRouteFromXZ(defaultRouteXZ, settings.altitude);
+  wpIndex = 0;
+  drone.position.copy(routePoints[0]);
+  motion.velocity.set(0, 0, 0);
+  rebuildWaypointMarkers();
+}
+
+function clearRoute() {
+  routePoints = buildRouteFromXZ([[0, 0], [12, 0]], settings.altitude);
+  wpIndex = 0;
+  drone.position.copy(routePoints[0]);
+  motion.velocity.set(0, 0, 0);
+  rebuildWaypointMarkers();
+}
+
+/* ===== UIイベント（高度/速度/モード） ===== */
+function bindRangeAndNumber(rangeEl, numberEl, onChange) {
+  const sync = (v) => {
+    rangeEl.value = String(v);
+    numberEl.value = String(v);
+    onChange(v);
+  };
+  rangeEl.addEventListener('input', () => sync(rangeEl.value));
+  numberEl.addEventListener('input', () => sync(numberEl.value));
+}
+
+bindRangeAndNumber(altitudeEl, altitudeNumEl, (v) => setAltitude(v));
+bindRangeAndNumber(speedEl, speedNumEl, (v) => setSpeed(v));
+
+camModeEl.addEventListener('change', () => {
+  settings.camMode = camModeEl.value;
+  updateHud();
+});
+
+editModeEl.addEventListener('change', () => {
+  settings.editMode = Boolean(editModeEl.checked);
+  // 日本語コメント: 編集→飛行に切り替えるタイミングで初期化（意図しない慣性を防ぐ）
+  if (!settings.editMode) {
+    wpIndex = 0;
+    drone.position.copy(routePoints[0]);
+    motion.velocity.set(0, 0, 0);
+  }
+});
+
+resetRouteEl.addEventListener('click', () => resetRoute());
+clearRouteEl.addEventListener('click', () => clearRoute());
+
+/* ===== ポインター操作（編集モード時のみ） ===== */
+renderer.domElement.addEventListener('pointerdown', (ev) => {
+  isPointerDown = true;
+  if (!settings.editMode) return;
+
+  setPointerFromEvent(ev);
+
+  // 日本語コメント: まずマーカーを掴めるかを判定（ドラッグ開始）
+  const wpHit = intersectWaypointMarker();
+  if (wpHit) {
+    dragIndex = wpMarkers.indexOf(wpHit.object);
+    return;
+  }
+
+  const hit = intersectGround();
+  if (!hit) return;
+
+  // 日本語コメント: Shift+クリック＝近い点を削除（最低2点は維持）
+  if (ev.shiftKey) {
+    if (routePoints.length <= 2) return;
+
+    const x = hit.point.x;
+    const z = hit.point.z;
+    let bestI = 0;
+    let bestD2 = Infinity;
+    routePoints.forEach((p, i) => {
+      const dx = p.x - x;
+      const dz = p.z - z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        bestI = i;
+      }
+    });
+
+    routePoints.splice(bestI, 1);
+    clampRouteMinimum();
+
+    // 日本語コメント: 現在ターゲットが消えた場合も破綻しないように補正
+    wpIndex = wpIndex % routePoints.length;
+    rebuildWaypointMarkers();
+    return;
+  }
+
+  // 日本語コメント: 通常クリック＝点を追加（末尾に追加）
+  routePoints.push(new THREE.Vector3(hit.point.x, settings.altitude, hit.point.z));
+  rebuildWaypointMarkers();
+});
+
+renderer.domElement.addEventListener('pointermove', (ev) => {
+  if (!settings.editMode) return;
+  if (!isPointerDown) return;
+  if (dragIndex < 0) return;
+
+  setPointerFromEvent(ev);
+  const hit = intersectGround();
+  if (!hit) return;
+
+  const p = routePoints[dragIndex];
+  p.x = hit.point.x;
+  p.z = hit.point.z;
+  p.y = settings.altitude;
+  wpMarkers[dragIndex].position.copy(p);
+
+  rebuildPathLine();
+});
+
+window.addEventListener('pointerup', () => {
+  isPointerDown = false;
+  dragIndex = -1;
+});
+
+/* ===== リサイズ ===== */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ===== 初期状態 ===== */
+drone.position.copy(routePoints[0]);
+rebuildWaypointMarkers();
+updateHud();
+
+/* ===== アニメーションループ ===== */
+function animate() {
+  requestAnimationFrame(animate);
+
+  // 日本語コメント: 編集中は「移動しない」ことで操作を安定させる（誤操作防止）
+  if (!settings.editMode && routePoints.length >= 2) {
+    // 日本語コメント: dtはスパイクしうるので上限をかけて安定化
+    const dt = Math.min(clock.getDelta(), 0.05);
+
+    let target = routePoints[wpIndex];
+    vToTarget.set(target.x - drone.position.x, 0, target.z - drone.position.z);
+    let dist = vToTarget.length();
+
+    // 日本語コメント: 目標点の近傍 or 通過したら次へ（慣性でオーバーシュートしても詰まらない）
+    if (dist < 0.8 || vToTarget.dot(motion.velocity) < 0) {
+      wpIndex = (wpIndex + 1) % routePoints.length;
+      target = routePoints[wpIndex];
+      vToTarget.set(target.x - drone.position.x, 0, target.z - drone.position.z);
+      dist = vToTarget.length();
+    }
+
+    // 日本語コメント: 速度スライダーは「体感」を保つため 60fps換算でm/sに変換
+    const maxSpeed = settings.speed * 60;
+    const slowRadius = 10;
+    const desiredSpeed = maxSpeed * Math.min(1, dist / slowRadius);
+
+    if (dist > 1e-6) {
+      vDir.copy(vToTarget).normalize();
+      vDesired.copy(vDir).multiplyScalar(desiredSpeed);
+    } else {
+      vDesired.set(0, 0, 0);
+    }
+
+    // 日本語コメント: 加速度制限つきで目標速度へ近づける（慣性の中核）
+    vDesired.sub(motion.velocity);
+    const maxDeltaV = settings.accel * dt;
+    if (vDesired.length() > maxDeltaV) vDesired.setLength(maxDeltaV);
+    motion.velocity.add(vDesired);
+
+    // 日本語コメント: 空気抵抗っぽい減衰（dtに応じて安定させる）
+    const damp = Math.max(0, 1 - settings.damping * dt);
+    motion.velocity.multiplyScalar(damp);
+    motion.velocity.y = 0;
+
+    drone.position.addScaledVector(motion.velocity, dt);
+    drone.position.y = settings.altitude;
+
+    // 日本語コメント: 機首は速度方向へ向けるが、即時ではなく追従（旋回慣性）
+    if (motion.velocity.lengthSq() > 0.01) {
+      vDir.copy(motion.velocity);
+      vDir.y = 0;
+      if (vDir.lengthSq() > 1e-6) vDir.normalize();
+      vLook.copy(drone.position).add(vDir);
+      tmpObj.position.copy(drone.position);
+      tmpObj.lookAt(vLook.x, drone.position.y, vLook.z);
+      qDesired.copy(tmpObj.quaternion);
+      const t = 1 - Math.exp(-settings.turn * dt);
+      drone.quaternion.slerp(qDesired, t);
+    }
+  } else {
+    // 日本語コメント: 編集中も時計を進めてdtの跳ねを抑える
+    clock.getDelta();
+  }
+
+  // 日本語コメント: ドローン視点はアスペクト追従が必要
+  if (settings.camMode === 'drone') {
+    droneCam.aspect = window.innerWidth / window.innerHeight;
+    droneCam.updateProjectionMatrix();
+    renderer.render(scene, droneCam);
+  } else {
+    renderer.render(scene, camera);
+  }
+}
+
+animate();
+</script>
+</body>
+</html>
